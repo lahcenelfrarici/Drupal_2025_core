@@ -1,0 +1,42 @@
+<?php
+
+
+use Drupal\commerce_product\Entity\ProductInterface;
+
+use Drupal\Core\Entity\EntityInterface;
+use Drupal\node\NodeInterface;
+
+use Drupal\commerce_product\Entity\ProductVariationInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+
+
+/**
+ * Implements hook_ENTITY_VIEW().
+ */
+function custom_blocks_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode)
+{
+  // Vérifie si l'entité est un produit.
+  // if ($entity instanceof ProductInterface) {
+  $current_user = \Drupal::currentUser();
+  // Vérifie que l'utilisateur est connecté.
+  //if ($current_user->isAuthenticated()) {
+  $account = \Drupal\user\Entity\User::load($current_user->id());
+
+  // Vérifie le champ field_account_active.
+  if (!$account->get('field_account_active')->value) {
+    // Remplacer le contenu du produit par un message.
+    $build['#markup'] = '<div class="access-denied">Veuillez effectuer un paiement pour accéder à ce contenu.</div>';
+    $build['#access'] = TRUE;
+
+    // Supprime les champs non désirés.
+    unset($build['body']);
+    // unset($build['variations']);
+    //return;
+  }
+  // wach anzido condition  3la lwa9t dyal la formation "date d expiration de formation"
+
+
+
+  //}
+}
+
