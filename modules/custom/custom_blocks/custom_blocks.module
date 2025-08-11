@@ -12,22 +12,14 @@ use Drupal\commerce_order\Entity\Order;
 /**
  * Implements hook_ENTITY_VIEW().
  */
-
-
-function custom_blocks_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode)
-{
+function custom_blocks_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode) {
   $current_user = \Drupal::currentUser();
-
-  // if (!$current_user->isAuthenticated()) {
-  //   return;
-  // }
-
   $account = \Drupal\user\Entity\User::load($current_user->id());
 
   if ($entity instanceof NodeInterface && $entity->bundle() === 'article') {
     $nid = $entity->id();
 
-    //  Skip les admins
+    // Skip admin or inactive account
     if (!$account->hasRole('administrator') && !$account->get('field_account_active')->value) {
       $build['#markup'] = '<div class="access-denied">Votre compte n’est pas actif. Veuillez effectuer un paiement pour accéder à cette formation.</div>';
       $build['#access'] = TRUE;
@@ -35,11 +27,11 @@ function custom_blocks_entity_view(array &$build, EntityInterface $entity, Entit
       return;
     }
 
-    //  Cas 1 : commandes Drupal Commerce
+    // Cas 1 : Commandes Commerce
     $query = \Drupal::entityTypeManager()->getStorage('commerce_order')->getQuery();
     $query->condition('uid', $account->id())
-      ->condition('state', 'completed')
-      ->accessCheck(FALSE);
+          ->condition('state', 'completed')
+          ->accessCheck(FALSE);
     $order_ids = $query->execute();
 
     if (!empty($order_ids)) {
@@ -57,25 +49,26 @@ function custom_blocks_entity_view(array &$build, EntityInterface $entity, Entit
 
               foreach ($linked_formations as $index => $formation_node) {
                 if ($formation_node->id() == $nid) {
-                  // Formation 1 : toujours accessible
+                  // Formation en 1re position : accès immédiat
                   if ($index === 0) {
                     return;
                   }
 
-                  // Formation 2 : accessible après 7 jours
-                  if ($index === 1) {
-                    $completed_time = $order->getCompletedTime(); // timestamp
-                    if ($completed_time) {
-                      $now = \Drupal::time()->getCurrentTime();
-                      $days_since_purchase = ($now - $completed_time) / (60 * 60 * 24);//dd($days_since_purchase);
-                      if ($days_since_purchase >= 7) {
-                        return;
-                      } else {
-                        $build['#markup'] = '<div class="access-denied">La formation 2 sera disponible 7 jours après l’achat.</div>';
-                        $build['#access'] = TRUE;
-                        unset($build['body']);
-                        return;
-                      }
+                  // Formations suivantes : accès différé selon l’index
+                  $completed_time = $order->getCompletedTime();
+                  if ($completed_time) {
+                    $now = \Drupal::time()->getCurrentTime();
+                    $days_required = 7 * $index;
+                    $days_since = ($now - $completed_time) / (60 * 60 * 24);
+
+                    if ($days_since >= $days_required) {
+                      return;
+                    } else {
+                      $remaining = ceil($days_required - $days_since);
+                      $build['#markup'] = '<div class="access-denied">Cette formation sera disponible dans ' . $remaining . ' jour(s).</div>';
+                      $build['#access'] = TRUE;
+                      unset($build['body']);
+                      return;
                     }
                   }
                 }
@@ -86,180 +79,88 @@ function custom_blocks_entity_view(array &$build, EntityInterface $entity, Entit
       }
     }
 
-    // Cas 2 : Paiement manuel (via champ mannuel via field_formations_achetees)
-    $formation_ids = array_map(function ($item) {
-      return $item['target_id'];
-    }, $account->get('field_formations_achetees')->getValue());
+    // Cas 2 : Paiement manuel
+    $formation_ids = array_map(fn($item) => $item['target_id'], $account->get('field_formations_achetees')->getValue());
 
-    if ($nid == 1) {
-      return;
-    }
     if (in_array($nid, $formation_ids)) {
+      $manual_validation_date = $account->get('field_formation_purchase_date')->value;
 
+      // On récupère dynamiquement l’index de la formation depuis le champ associé au produit
+      $index = null;
+      foreach ($formation_ids as $i => $fid) {
+        if ($fid == $nid) {
+          $index = $i;
+          break;
+        }
+      }
 
-      // Si formation 2 (nid == 2), appliquer délai 7 jours
-      if ($nid == 2) {
-        $manual_validation_date = $account->get('field_formation_purchase_date')->value;
-        if ($manual_validation_date) {
-          $manual_timestamp = strtotime($manual_validation_date);
-          $now = \Drupal::time()->getCurrentTime();
-          // $days_since_manual = ($now - $manual_timestamp) / (60 * 60 * 24); 7days
-          $hours_since_manual = ($now - $manual_timestamp) / 3600; //apres 2heur
+      if ($index === 0) {
+        return; // accès immédiat
+      }
 
-          if ($hours_since_manual >= 2) {
+      if ($manual_validation_date) {
+        $manual_timestamp = strtotime($manual_validation_date);
+        $now = \Drupal::time()->getCurrentTime();
 
-            return; // accès autorisé
+        if ($index === 1) {
+          $hours_required = 2; //7
+          $hours_since = ($now - $manual_timestamp) / 3600; //
+
+          if ($hours_since >= $hours_required) {
+            return;
           } else {
-            $jours_restants = ceil(2 - $hours_since_manual);
-            $build['#markup'] = '<div class="access-denied">La formation 2 sera disponible ' . ($jours_restants > 1 ? "dans $jours_restants jours." : "demain.") . '</div>';
+            $h_remaining = ceil($hours_required - $hours_since);
+            $build['#markup'] = '<div class="access-denied">La formation sera disponible dans ' . $h_remaining . ' heure(s).</div>';
             $build['#access'] = TRUE;
             unset($build['body']);
             return;
           }
         } else {
-          $build['#markup'] = '<div class="access-denied">Date de validation manuelle manquante pour cette formation.</div>';
-          $build['#access'] = TRUE;
-          unset($build['body']);
-          return;
-        }
-      }
-      //
-      // Si formation 3 (nid == 3), appliquer délai 7 jours
-      if ($nid == 3) {
-        $manual_validation_date = $account->get('field_formation_purchase_date')->value;
-        if ($manual_validation_date) {
-          $manual_timestamp = strtotime($manual_validation_date);
-          $now = \Drupal::time()->getCurrentTime();
-          // $days_since_manual = ($now - $manual_timestamp) / (60 * 60 * 24); 7days
-          $hours_since_manual = ($now - $manual_timestamp) / 3600; //apres 2heur
+          $days_required = 7 * $index;
+          $days_since = ($now - $manual_timestamp) / (60 * 60 * 24);
 
-          if ($hours_since_manual >= 2) {
-
-            return; // accès autorisé
+          if ($days_since >= $days_required) {
+            return;
           } else {
-            $jours_restants = ceil(2 - $hours_since_manual);
-            $build['#markup'] = '<div class="access-denied">La formation 2 sera disponible ' . ($jours_restants > 1 ? "dans $jours_restants jours." : "demain.") . '</div>';
+            $remaining = ceil($days_required - $days_since);
+            $build['#markup'] = '<div class="access-denied">La formation sera disponible dans ' . $remaining . ' jour(s).</div>';
             $build['#access'] = TRUE;
             unset($build['body']);
             return;
           }
-        } else {
-          $build['#markup'] = '<div class="access-denied">Date de validation manuelle manquante pour cette formation.</div>';
-          $build['#access'] = TRUE;
-          unset($build['body']);
-          return;
         }
-      }
 
-      // ✅ Si une autre formation a été ajoutée manuellement
-      return;
+      } else {
+        $build['#markup'] = '<div class="access-denied">Date de validation manuelle manquante pour cette formation.</div>';
+        $build['#access'] = TRUE;
+        unset($build['body']);
+        return;
+      }
     }
 
-    // Si aucun cas ne correspond : accès refusé
+    // Accès refusé par défaut
     $build['#markup'] = '<div class="access-denied">Cette formation ne fait pas partie de vos achats.</div>';
     $build['#access'] = TRUE;
     unset($build['body']);
   }
 }
-// function custom_blocks_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, $view_mode)
-// {
-//   $current_user = \Drupal::currentUser();
 
-//   if (!$current_user->isAuthenticated()) {
-//     return;
-//   }
+/**
+ * Implements hook_preprocess_product().
+ */
+function custom_blocks_preprocess_commerce_product(&$variables) {
+  $product = $variables['product_entity'];
 
-//   $account = \Drupal\user\Entity\User::load($current_user->id());
+  if ($product->hasField('field_formations_associees')) {
+    $linked_formations = $product->get('field_formations_associees')->referencedEntities();
 
-//   if ($entity instanceof NodeInterface && $entity->bundle() === 'article') {
-//     $nid = $entity->id();
+    $variables['linked_formations'] = [];
+    foreach ($linked_formations as $formation) {
+      $variables['linked_formations'][] = [
+        'title' => $formation->label(),
+        'url' => $formation->toUrl()->toString(),
+      ];
+    }
+  }
 
-//     // 💡 Vérifie que le compte est actif
-//     // if (!$account->get('field_account_active')->value) {
-//     //   $build['#markup'] = '<div class="access-denied">Votre compte n’est pas actif. Veuillez effectuer un paiement pour accéder à cette formation.</div>';
-//     //   $build['#access'] = TRUE;
-//     //   unset($build['body']);
-//     //   return;
-//     // }
-
-//     // if (
-//     //   !$account->hasRole('administrator') &&
-//     //   !$account->get('field_account_active')->value
-//     // ) {
-//     //   $build['#markup'] = '<div class="access-denied">Votre compte n’est pas actif. Veuillez effectuer un paiement pour accéder à cette formation.</div>';
-//     //   $build['#access'] = TRUE;
-//     //   // unset($build['body']);
-//     //   return;
-//     // }
-
-//     // 💡 Récupère les produits achetés par l'utilisateur
-//     $query = \Drupal::entityTypeManager()->getStorage('commerce_order')->getQuery();
-//     $query->condition('uid', $account->id())
-//       ->condition('state', 'completed')
-//       ->accessCheck(FALSE);
-//     $order_ids = $query->execute();
-//     // die("eeeeeeeee");
-// // dump($order_ids);
-//     if (!empty($order_ids)) {
-//       $orders = Order::loadMultiple($order_ids);
-
-//       foreach ($orders as $order) {
-//         foreach ($order->getItems() as $order_item) {
-//           $variation = $order_item->getPurchasedEntity();
-
-//           if ($variation && $variation instanceof \Drupal\commerce_product\Entity\ProductVariationInterface) {
-//             $product = $variation->getProduct();
-
-//             if ($product instanceof ProductInterface) {
-//               $linked_formations = $product->get('field_formations_associees')->referencedEntities();
-
-//               // dump($linked_formations);
-
-
-//               foreach ($linked_formations as $index => $formation_node) {
-//                 if ($formation_node->id() == $nid) {
-//                   // Formation trouvée dans le produit
-//                   if ($index === 0) {
-//                     // Formation 1 : toujours accessible
-//                     return;
-//                   } elseif ($index === 1) {
-
-//                     $build['#access'] = FALSE;
-//                     unset($build['body']);
-//                     // Formation 2 : après 7 jours
-//                     $completed_time = $order->getCompletedTime(); // timestamp
-//                     if ($completed_time) {
-//                       $now = \Drupal::time()->getCurrentTime();
-//                       $days_since_purchase = ($now - $completed_time) / (60 * 60 * 24);
-
-//                       if ($days_since_purchase >= 7) {
-//                         return; // accès autorisé
-//                       } else {
-//                         $build['#markup'] = '<div class="access-denied">La formation 2 sera disponible 7 jours après l’achat.</div>';
-//                         $build['#access'] = TRUE;
-//                         return;
-//                       }
-//                     } else {
-//                       $build['#markup'] = '<div class="access-denied">Date d’achat introuvable.</div>';
-//                       $build['#access'] = TRUE;
-//                       return;
-//                     }
-//                   }
-//                 }
-//               }
-//             }
-//           }
-//         }
-//       }
-//     }
-
-
-
-
-
-
-//     //  Formation non liée à un produit acheté
-//     // $build['#markup'] = '<div class="access-denied">Cette formation ne fait pas partie de vos achats.</div>';
-//     // $build['#access'] = TRUE;
-//   }
-// }
+}
